@@ -40,6 +40,9 @@ jobs:
           VERSION="${{ github.event.client_payload.version || inputs.version }}"
           OWNER="${{ github.event.client_payload.owner || github.repository_owner }}"
 
+          # Strip leading "v" so version is always bare e.g. "1.0.3" not "v1.0.3"
+          VERSION="${VERSION#v}"
+
           echo "tool=$TOOL"       >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "owner=$OWNER"     >> $GITHUB_OUTPUT
