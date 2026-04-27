@@ -14,9 +14,17 @@ class EepromSign < Formula
   version  "1.0.4"
 
   on_macos do
-    url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.4/eeprom-sign-macos-arm64"
+    url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.6/eeprom-sign-macos-arm64"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-    
+  end
+  on_linux do
+    if Hardware::CPU.arm?
+      url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.6/eeprom-sign-linux-aarch64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    else
+      url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.6/eeprom-sign-linux-x86_64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    end
   end
 
   def install
