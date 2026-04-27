@@ -1,0 +1,153 @@
+name: Update formula on new release
+
+# ── Triggers ────────────────────────────────────────────────────────────────
+# 1. Automatically: when a new release is published in the tool repo.
+#    Set up a repository dispatch webhook in eeprom-sign's release.yml
+#    (see notes at the bottom of this file).
+# 2. Manually: via the GitHub Actions UI, so you can re-run without a new tag.
+on:
+  repository_dispatch:
+    types: [new-release]       # sent by the tool repo's release.yml
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to pull (e.g. 0.2.0 — without the leading v)"
+        required: true
+      tool:
+        description: "Tool name (must match the binary name on the release)"
+        required: true
+        default: "eeprom-sign"
+
+jobs:
+  update-formula:
+    name: Update ${{ github.event.client_payload.tool || inputs.tool }} formula
+    runs-on: ubuntu-latest
+
+    # Fine-grained PAT with "Contents: Read and write" on this tap repo.
+    # Add it as a secret called TAP_GITHUB_TOKEN in this repo's settings.
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ── Resolve inputs (works for both dispatch types) ───────────────────
+      - name: Resolve tool and version
+        id: vars
+        run: |
+          # repository_dispatch sets client_payload; workflow_dispatch sets inputs
+          TOOL="${{ github.event.client_payload.tool || inputs.tool }}"
+          VERSION="${{ github.event.client_payload.version || inputs.version }}"
+          OWNER="${{ github.event.client_payload.owner || github.repository_owner }}"
+
+          echo "tool=$TOOL"       >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "owner=$OWNER"     >> $GITHUB_OUTPUT
+
+          echo "Updating formula for $TOOL v$VERSION (owner: $OWNER)"
+
+      # ── Download the binary from the release and compute SHA-256 ─────────
+      - name: Download release binary and compute SHA-256
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          TOOL="${{ steps.vars.outputs.tool }}"
+          VERSION="${{ steps.vars.outputs.version }}"
+          OWNER="${{ steps.vars.outputs.owner }}"
+
+          # The binary name as uploaded by the tool repo's release.yml.
+          # Adjust if you use architecture-specific names (e.g. -macos-x86_64).
+          BINARY_NAME="${TOOL}"
+          ASSET_URL="https://github.com/${OWNER}/${TOOL}/releases/download/v${VERSION}/${BINARY_NAME}"
+
+          echo "Downloading $ASSET_URL"
+          curl -fsSL -H "Authorization: token $GH_TOKEN" \
+               -H "Accept: application/octet-stream" \
+               "$ASSET_URL" -o "${BINARY_NAME}"
+
+          SHA=$(shasum -a 256 "${BINARY_NAME}" | awk '{print $1}')
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "SHA-256: $SHA"
+
+      # ── Check out the tap repo ────────────────────────────────────────────
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      # ── Update the formula file ───────────────────────────────────────────
+      - name: Patch formula
+        env:
+          TOOL:    ${{ steps.vars.outputs.tool }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          OWNER:   ${{ steps.vars.outputs.owner }}
+          SHA256:  ${{ steps.sha.outputs.sha256 }}
+        run: |
+          FORMULA="Formula/${TOOL}.rb"
+
+          if [ ! -f "$FORMULA" ]; then
+            echo "ERROR: $FORMULA not found in tap repo."
+            exit 1
+          fi
+
+          # Update version
+          sed -i "s|version  \".*\"|version  \"${VERSION}\"|" "$FORMULA"
+
+          # Update url (handles both bare and arch-suffixed binary names)
+          sed -i "s|releases/download/v[0-9.]\+/${TOOL}|releases/download/v${VERSION}/${TOOL}|g" "$FORMULA"
+
+          # Update sha256 — replaces any 64-char hex string on a sha256 line
+          sed -i "s|sha256 \"[a-f0-9]\{64\}\"|sha256 \"${SHA256}\"|g" "$FORMULA"
+
+          echo "--- Updated formula ---"
+          cat "$FORMULA"
+
+      # ── Open a PR so you can review before merging ───────────────────────
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          commit-message: "${{ steps.vars.outputs.tool }} ${{ steps.vars.outputs.version }}"
+          branch: "update/${{ steps.vars.outputs.tool }}-${{ steps.vars.outputs.version }}"
+          delete-branch: true
+          title: "Update ${{ steps.vars.outputs.tool }} to v${{ steps.vars.outputs.version }}"
+          body: |
+            Automated formula update.
+
+            - **Tool:** `${{ steps.vars.outputs.tool }}`
+            - **Version:** `${{ steps.vars.outputs.version }}`
+            - **SHA-256:** `${{ steps.sha.outputs.sha256 }}`
+
+            Triggered by a new release in the upstream repo.
+            Please review the diff and merge when ready.
+          labels: automated, formula-update
+
+# ── WIRING: how to trigger this from the tool repo ──────────────────────────
+#
+# In eeprom-sign's .github/workflows/release.yml, add this step AFTER the
+# binary has been uploaded to the GitHub release:
+#
+#   - name: Notify homebrew-tap
+#     uses: peter-evans/repository-dispatch@v3
+#     with:
+#       token: ${{ secrets.TAP_GITHUB_TOKEN }}
+#       repository: yourname/homebrew-tap
+#       event-type: new-release
+#       client-payload: |
+#         {
+#           "tool": "eeprom-sign",
+#           "version": "${{ github.ref_name }}",
+#           "owner": "${{ github.repository_owner }}"
+#         }
+#
+# The version passed here is the raw tag (e.g. "v0.2.0").
+# The workflow strips the leading "v" automatically via the vars step.
+#
+# SECRET SETUP (one time):
+#   1. Go to github.com → Settings → Developer settings →
+#      Fine-grained personal access tokens → Generate new token.
+#   2. Grant it "Contents: Read and write" and "Pull requests: Read and write"
+#      on BOTH repos (eeprom-sign AND homebrew-tap).
+#   3. Add it as a secret named TAP_GITHUB_TOKEN in both repos:
+#      - eeprom-sign repo  → Settings → Secrets → Actions → New secret
+#      - homebrew-tap repo → Settings → Secrets → Actions → New secret
