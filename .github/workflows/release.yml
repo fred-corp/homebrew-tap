@@ -1,4 +1,4 @@
-name: Update formulae on new release
+name: Update formula on new release
 
 # ── Triggers ────────────────────────────────────────────────────────────────
 # 1. Automatically: when a new release is published in the tool repo.
@@ -20,7 +20,7 @@ on:
         default: "eeprom-sign"
 
 jobs:
-  update-formulae:
+  update-formula:
     name: Update ${{ github.event.client_payload.tool || inputs.tool }} formula
     runs-on: ubuntu-latest
 
@@ -86,7 +86,7 @@ jobs:
           OWNER:   ${{ steps.vars.outputs.owner }}
           SHA256:  ${{ steps.sha.outputs.sha256 }}
         run: |
-          FORMULA="Formulae/${TOOL}.rb"
+          FORMULA="Formula/${TOOL}.rb"
 
           if [ ! -f "$FORMULA" ]; then
             echo "ERROR: $FORMULA not found in tap repo."
