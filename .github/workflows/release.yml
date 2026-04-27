@@ -1,21 +1,16 @@
 name: Update formula on new release
 
-# ── Triggers ────────────────────────────────────────────────────────────────
-# 1. Automatically: when a new release is published in the tool repo.
-#    Set up a repository dispatch webhook in eeprom-sign's release.yml
-#    (see notes at the bottom of this file).
-# 2. Manually: via the GitHub Actions UI, so you can re-run without a new tag.
 on:
   repository_dispatch:
-    types: [new-release]       # sent by the tool repo's release.yml
+    types: [new-release]
 
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to pull (e.g. 0.2.0 — without the leading v)"
+        description: "Version to pull (e.g. 1.0.4 — without the leading v)"
         required: true
       tool:
-        description: "Tool name (must match the binary name on the release)"
+        description: "Tool name"
         required: true
         default: "eeprom-sign"
 
@@ -23,24 +18,19 @@ jobs:
   update-formula:
     name: Update ${{ github.event.client_payload.tool || inputs.tool }} formula
     runs-on: ubuntu-latest
-
-    # Fine-grained PAT with "Contents: Read and write" on this tap repo.
-    # Add it as a secret called TAP_GITHUB_TOKEN in this repo's settings.
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      # ── Resolve inputs (works for both dispatch types) ───────────────────
       - name: Resolve tool and version
         id: vars
         run: |
-          # repository_dispatch sets client_payload; workflow_dispatch sets inputs
           TOOL="${{ github.event.client_payload.tool || inputs.tool }}"
           VERSION="${{ github.event.client_payload.version || inputs.version }}"
           OWNER="${{ github.event.client_payload.owner || github.repository_owner }}"
 
-          # Strip leading "v" so version is always bare e.g. "1.0.3" not "v1.0.3"
+          # Strip leading "v" so version is always bare e.g. "1.0.4" not "v1.0.4"
           VERSION="${VERSION#v}"
 
           echo "tool=$TOOL"       >> $GITHUB_OUTPUT
@@ -49,42 +39,40 @@ jobs:
 
           echo "Updating formula for $TOOL v$VERSION (owner: $OWNER)"
 
-      # ── Download the binary from the release and compute SHA-256 ─────────
-      - name: Download release binary and compute SHA-256
+      - name: Download binaries and compute SHA-256
         id: sha
         env:
           GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TOOL:     ${{ steps.vars.outputs.tool }}
+          VERSION:  ${{ steps.vars.outputs.version }}
+          OWNER:    ${{ steps.vars.outputs.owner }}
         run: |
-          TOOL="${{ steps.vars.outputs.tool }}"
-          VERSION="${{ steps.vars.outputs.version }}"
-          OWNER="${{ steps.vars.outputs.owner }}"
+          BASE_URL="https://github.com/${OWNER}/${TOOL}/releases/download/v${VERSION}"
 
-          # The binary name as uploaded by the tool repo's release.yml.
-          # Adjust if you use architecture-specific names (e.g. -macos-x86_64).
-          BINARY_NAME="${TOOL}"
-          ASSET_URL="https://github.com/${OWNER}/${TOOL}/releases/download/v${VERSION}/${BINARY_NAME}"
+          for ARCH in arm64 x86_64; do
+            BINARY="${TOOL}-macos-${ARCH}"
+            echo "Downloading $BASE_URL/$BINARY"
+            curl -fsSL \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/octet-stream" \
+              "$BASE_URL/$BINARY" -o "$BINARY"
 
-          echo "Downloading $ASSET_URL"
-          curl -fsSL -H "Authorization: token $GH_TOKEN" \
-               -H "Accept: application/octet-stream" \
-               "$ASSET_URL" -o "${BINARY_NAME}"
+            SHA=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+            echo "sha256_${ARCH}=$SHA" >> $GITHUB_OUTPUT
+            echo "SHA-256 ($ARCH): $SHA"
+          done
 
-          SHA=$(shasum -a 256 "${BINARY_NAME}" | awk '{print $1}')
-          echo "sha256=$SHA" >> $GITHUB_OUTPUT
-          echo "SHA-256: $SHA"
-
-      # ── Check out the tap repo ────────────────────────────────────────────
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
 
-      # ── Update the formula file ───────────────────────────────────────────
       - name: Patch formula
         env:
-          TOOL:    ${{ steps.vars.outputs.tool }}
-          VERSION: ${{ steps.vars.outputs.version }}
-          OWNER:   ${{ steps.vars.outputs.owner }}
-          SHA256:  ${{ steps.sha.outputs.sha256 }}
+          TOOL:        ${{ steps.vars.outputs.tool }}
+          VERSION:     ${{ steps.vars.outputs.version }}
+          OWNER:       ${{ steps.vars.outputs.owner }}
+          SHA_ARM64:   ${{ steps.sha.outputs.sha256_arm64 }}
+          SHA_X86_64:  ${{ steps.sha.outputs.sha256_x86_64 }}
         run: |
           FORMULA="Formula/${TOOL}.rb"
 
@@ -96,16 +84,38 @@ jobs:
           # Update version
           sed -i "s|version  \".*\"|version  \"${VERSION}\"|" "$FORMULA"
 
-          # Update url (handles both bare and arch-suffixed binary names)
-          sed -i "s|releases/download/v[0-9.]\+/${TOOL}|releases/download/v${VERSION}/${TOOL}|g" "$FORMULA"
+          # Update URLs for both architectures
+          sed -i "s|releases/download/v[0-9.]\+/${TOOL}-macos-arm64|releases/download/v${VERSION}/${TOOL}-macos-arm64|g" "$FORMULA"
+          sed -i "s|releases/download/v[0-9.]\+/${TOOL}-macos-x86_64|releases/download/v${VERSION}/${TOOL}-macos-x86_64|g" "$FORMULA"
 
-          # Update sha256 — replaces any 64-char hex string on a sha256 line
-          sed -i "s|sha256 \"[a-f0-9]\{64\}\"|sha256 \"${SHA256}\"|g" "$FORMULA"
+          # Update sha256 for arm64 — the first sha256 line in the file
+          # Use a Python one-liner for reliable multi-line sed behaviour
+          python3 - << PYEOF
+          import re, os
+
+          content = open("${FORMULA}").read()
+
+          # Replace arm64 sha256 (appears inside the if Hardware::CPU.arm? block)
+          content = re.sub(
+              r'(if Hardware::CPU\.arm\?.*?sha256 ")[a-f0-9]{64}(")',
+              r'\g<1>${SHA_ARM64}\2',
+              content, flags=re.DOTALL
+          )
+
+          # Replace x86_64 sha256 (appears inside the else block)
+          content = re.sub(
+              r'(else.*?sha256 ")[a-f0-9]{64}(")',
+              r'\g<1>${SHA_X86_64}\2',
+              content, flags=re.DOTALL
+          )
+
+          open("${FORMULA}", "w").write(content)
+          print("Patched sha256 values")
+          PYEOF
 
           echo "--- Updated formula ---"
           cat "$FORMULA"
 
-      # ── Open a PR so you can review before merging ───────────────────────
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
@@ -119,38 +129,6 @@ jobs:
 
             - **Tool:** `${{ steps.vars.outputs.tool }}`
             - **Version:** `${{ steps.vars.outputs.version }}`
-            - **SHA-256:** `${{ steps.sha.outputs.sha256 }}`
-
-            Triggered by a new release in the upstream repo.
-            Please review the diff and merge when ready.
+            - **SHA-256 (arm64):** `${{ steps.sha.outputs.sha256_arm64 }}`
+            - **SHA-256 (x86_64):** `${{ steps.sha.outputs.sha256_x86_64 }}`
           labels: automated, formula-update
-
-# ── WIRING: how to trigger this from the tool repo ──────────────────────────
-#
-# In eeprom-sign's .github/workflows/release.yml, add this step AFTER the
-# binary has been uploaded to the GitHub release:
-#
-#   - name: Notify homebrew-tap
-#     uses: peter-evans/repository-dispatch@v3
-#     with:
-#       token: ${{ secrets.TAP_GITHUB_TOKEN }}
-#       repository: yourname/homebrew-tap
-#       event-type: new-release
-#       client-payload: |
-#         {
-#           "tool": "eeprom-sign",
-#           "version": "${{ github.ref_name }}",
-#           "owner": "${{ github.repository_owner }}"
-#         }
-#
-# The version passed here is the raw tag (e.g. "v0.2.0").
-# The workflow strips the leading "v" automatically via the vars step.
-#
-# SECRET SETUP (one time):
-#   1. Go to github.com → Settings → Developer settings →
-#      Fine-grained personal access tokens → Generate new token.
-#   2. Grant it "Contents: Read and write" and "Pull requests: Read and write"
-#      on BOTH repos (eeprom-sign AND homebrew-tap).
-#   3. Add it as a secret named TAP_GITHUB_TOKEN in both repos:
-#      - eeprom-sign repo  → Settings → Secrets → Actions → New secret
-#      - homebrew-tap repo → Settings → Secrets → Actions → New secret
