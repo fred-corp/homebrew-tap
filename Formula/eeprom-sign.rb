@@ -13,22 +13,19 @@ class EepromSign < Formula
   homepage "https://github.com/fred-corp/eeprom-sign"
   version  "1.0.4"
 
-  # ── macOS binary (built by CI, attached to the GitHub release) ───────────
   on_macos do
     if Hardware::CPU.arm?
-      # Apple Silicon — build separately in CI if needed, or use the x86_64
-      # binary under Rosetta by falling through to the Intel block.
-      url "https://github.com/fred-corp/eeprom-sign/releases/download/v#{version}/eeprom-sign-macos-arm64"
-      sha256 "REPLACE_WITH_ARM64_SHA256_FROM_CI"
+      url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.4/eeprom-sign-macos-arm64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/fred-corp/eeprom-sign/releases/download/v#{version}/eeprom-sign-macos-x86_64"
-      sha256 "REPLACE_WITH_X86_64_SHA256_FROM_CI"
+      url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.4/eeprom-sign-macos-x86_64"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
-  # No build step — we ship a pre-built PyInstaller binary.
   def install
-    bin.install "eeprom-sign"
+    # The binary name varies by arch; install whichever was downloaded
+    bin.install Dir["eeprom-sign-macos-*"].first => "eeprom-sign"
   end
 
   test do
