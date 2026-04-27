@@ -86,7 +86,7 @@ jobs:
           OWNER:   ${{ steps.vars.outputs.owner }}
           SHA256:  ${{ steps.sha.outputs.sha256 }}
         run: |
-          FORMULA="formulae/${TOOL}.rb"
+          FORMULA="Formulae/${TOOL}.rb"
 
           if [ ! -f "$FORMULA" ]; then
             echo "ERROR: $FORMULA not found in tap repo."
