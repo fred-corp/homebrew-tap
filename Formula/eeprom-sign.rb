@@ -11,7 +11,7 @@
 class EepromSign < Formula
   desc     "RSA-PSS sign, verify, and batch-flash Raspberry Pi HAT+ EEPROMs"
   homepage "https://github.com/fred-corp/eeprom-sign"
-  version  "0.1.0"
+  version  "1.0.4"
 
   # ── macOS binary (built by CI, attached to the GitHub release) ───────────
   on_macos do
