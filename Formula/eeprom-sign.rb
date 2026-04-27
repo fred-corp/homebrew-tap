@@ -15,7 +15,7 @@ class EepromSign < Formula
 
   on_macos do
     url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.7/eeprom-sign-macos-arm64"
-    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+    sha256 "3acf2426b3d60655f51d59daa62f3290e8cc567bd5be02f6070f5af4bc6aad16"
   end
   on_linux do
     if Hardware::CPU.arm?
@@ -23,7 +23,7 @@ class EepromSign < Formula
       sha256 "3acf2426b3d60655f51d59daa62f3290e8cc567bd5be02f6070f5af4bc6aad16"
     else
       url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.6/eeprom-sign-linux-x86_64"
-      sha256 ""
+      sha256 "3acf2426b3d60655f51d59daa62f3290e8cc567bd5be02f6070f5af4bc6aad16"
     end
   end
 
