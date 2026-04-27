@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to pull (e.g. 1.0.4 — without the leading v)"
+        description: "Version to pull (e.g. 1.0.7 — without the leading v)"
         required: true
       tool:
         description: "Tool name"
@@ -29,14 +29,10 @@ jobs:
           TOOL="${{ github.event.client_payload.tool || inputs.tool }}"
           VERSION="${{ github.event.client_payload.version || inputs.version }}"
           OWNER="${{ github.event.client_payload.owner || github.repository_owner }}"
-
-          # Strip leading "v" so version is always bare e.g. "1.0.4" not "v1.0.4"
-          VERSION="${VERSION#v}"
-
+          VERSION="${VERSION#v}"   # strip leading "v"
           echo "tool=$TOOL"       >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "owner=$OWNER"     >> $GITHUB_OUTPUT
-
           echo "Updating formula for $TOOL v$VERSION (owner: $OWNER)"
 
       - name: Download binaries and compute SHA-256
@@ -49,17 +45,36 @@ jobs:
         run: |
           BASE_URL="https://github.com/${OWNER}/${TOOL}/releases/download/v${VERSION}"
 
-          for ARCH in arm64; do
-            BINARY="${TOOL}-macos-${ARCH}"
-            echo "Downloading $BASE_URL/$BINARY"
-            curl -fsSL \
+          # Download every binary variant that exists on this release.
+          # Add or remove entries here when you add/drop platforms.
+          declare -A BINARIES=(
+            [macos-arm64]="${TOOL}-macos-arm64"
+            [linux-aarch64]="${TOOL}-linux-aarch64"
+            [linux-x86_64]="${TOOL}-linux-x86_64"
+          )
+
+          for KEY in "${!BINARIES[@]}"; do
+            BINARY="${BINARIES[$KEY]}"
+            URL="$BASE_URL/$BINARY"
+            echo "Downloading $URL"
+
+            HTTP_CODE=$(curl -fsSL \
               -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/octet-stream" \
-              "$BASE_URL/$BINARY" -o "$BINARY"
+              -w "%{http_code}" \
+              "$URL" -o "$BINARY" 2>/dev/null || echo "000")
+
+            if [ "$HTTP_CODE" = "000" ] || [ ! -s "$BINARY" ]; then
+              echo "  ⚠️  $BINARY not found on release — skipping"
+              rm -f "$BINARY"
+              continue
+            fi
 
             SHA=$(shasum -a 256 "$BINARY" | awk '{print $1}')
-            echo "sha256_${ARCH}=$SHA" >> $GITHUB_OUTPUT
-            echo "SHA-256 ($ARCH): $SHA"
+            # Normalise key for GITHUB_OUTPUT (replace - with _)
+            SAFE_KEY="${KEY//-/_}"
+            echo "sha256_${SAFE_KEY}=$SHA" >> $GITHUB_OUTPUT
+            echo "  SHA-256 ($KEY): $SHA"
           done
 
       - uses: actions/checkout@v5
@@ -68,49 +83,61 @@ jobs:
 
       - name: Patch formula
         env:
-          TOOL:        ${{ steps.vars.outputs.tool }}
-          VERSION:     ${{ steps.vars.outputs.version }}
-          OWNER:       ${{ steps.vars.outputs.owner }}
-          SHA_ARM64:   ${{ steps.sha.outputs.sha256_arm64 }}
-          SHA_X86_64:  ${{ steps.sha.outputs.sha256_x86_64 }}
+          TOOL:                 ${{ steps.vars.outputs.tool }}
+          VERSION:              ${{ steps.vars.outputs.version }}
+          SHA_MACOS_ARM64:      ${{ steps.sha.outputs.sha256_macos_arm64 }}
+          SHA_LINUX_AARCH64:    ${{ steps.sha.outputs.sha256_linux_aarch64 }}
+          SHA_LINUX_X86_64:     ${{ steps.sha.outputs.sha256_linux_x86_64 }}
         run: |
           FORMULA="Formula/${TOOL}.rb"
+          [ -f "$FORMULA" ] || { echo "ERROR: $FORMULA not found"; exit 1; }
 
-          if [ ! -f "$FORMULA" ]; then
-            echo "ERROR: $FORMULA not found in tap repo."
-            exit 1
-          fi
+          python3 << 'PYEOF'
+          import os, re
 
-          # Update version
-          sed -i "s|version  \".*\"|version  \"${VERSION}\"|" "$FORMULA"
+          formula   = os.environ["FORMULA"]
+          tool      = os.environ["TOOL"]
+          version   = os.environ["VERSION"]
 
-          # Update URLs for both architectures
-          sed -i "s|releases/download/v[0-9.]\+/${TOOL}-macos-arm64|releases/download/v${VERSION}/${TOOL}-macos-arm64|g" "$FORMULA"
-          sed -i "s|releases/download/v[0-9.]\+/${TOOL}-macos-x86_64|releases/download/v${VERSION}/${TOOL}-macos-x86_64|g" "$FORMULA"
+          # Map: binary suffix → env var holding the new sha256
+          sha_map = {
+              f"{tool}-macos-arm64"   : os.environ.get("SHA_MACOS_ARM64",   ""),
+              f"{tool}-linux-aarch64" : os.environ.get("SHA_LINUX_AARCH64", ""),
+              f"{tool}-linux-x86_64"  : os.environ.get("SHA_LINUX_X86_64",  ""),
+          }
 
-          # Update sha256 for arm64 — the first sha256 line in the file
-          # Use a Python one-liner for reliable multi-line sed behaviour
-          python3 - << PYEOF
-          import re, os
+          content = open(formula).read()
 
-          content = open("${FORMULA}").read()
+          # 1. Update version line
+          content = re.sub(r'version\s+"[^"]+"', f'version  "{version}"', content)
 
-          # Replace arm64 sha256 (appears inside the if Hardware::CPU.arm? block)
-          content = re.sub(
-              r'(if Hardware::CPU\.arm\?.*?sha256 ")[a-f0-9]{64}(")',
-              r'\g<1>${SHA_ARM64}\2',
-              content, flags=re.DOTALL
-          )
+          # 2. For each binary, update its url and the sha256 on the very next line.
+          #    Pattern: url line containing the binary name, then optional whitespace
+          #    lines, then the sha256 line.
+          for binary, new_sha in sha_map.items():
+              if not new_sha:
+                  print(f"  skipping {binary} (no sha256 available)")
+                  continue
 
-          # Replace x86_64 sha256 (appears inside the else block)
-          content = re.sub(
-              r'(else.*?sha256 ")[a-f0-9]{64}(")',
-              r'\g<1>${SHA_X86_64}\2',
-              content, flags=re.DOTALL
-          )
+              # Update version in url
+              content = re.sub(
+                  rf'(url\s+"https://[^"]+/releases/download/v)[^/]+(/{re.escape(binary)}")',
+                  rf'\g<1>{version}\2',
+                  content
+              )
 
-          open("${FORMULA}", "w").write(content)
-          print("Patched sha256 values")
+              # Replace the sha256 immediately after the url for this binary.
+              # Matches: url line with binary name, then captures everything up to
+              # the next sha256 line, then replaces just the hash value.
+              content = re.sub(
+                  rf'(url\s+"[^"]*{re.escape(binary)}[^"]*"[^\n]*\n(?:[^\n]*\n)*?\s*sha256\s+")[a-f0-9]{{64}}(")',
+                  rf'\g<1>{new_sha}\2',
+                  content
+              )
+              print(f"  patched {binary} → {new_sha}")
+
+          open(formula, "w").write(content)
+          print("Done.")
           PYEOF
 
           echo "--- Updated formula ---"
@@ -129,6 +156,7 @@ jobs:
 
             - **Tool:** `${{ steps.vars.outputs.tool }}`
             - **Version:** `${{ steps.vars.outputs.version }}`
-            - **SHA-256 (arm64):** `${{ steps.sha.outputs.sha256_arm64 }}`
-            - **SHA-256 (x86_64):** `${{ steps.sha.outputs.sha256_x86_64 }}`
+            - **SHA-256 (macos-arm64):** `${{ steps.sha.outputs.sha256_macos_arm64 }}`
+            - **SHA-256 (linux-aarch64):** `${{ steps.sha.outputs.sha256_linux_aarch64 }}`
+            - **SHA-256 (linux-x86_64):** `${{ steps.sha.outputs.sha256_linux_x86_64 }}`
           labels: automated, formula-update
