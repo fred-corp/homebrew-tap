@@ -88,8 +88,8 @@ jobs:
           SHA_MACOS_ARM64:      ${{ steps.sha.outputs.sha256_macos_arm64 }}
           SHA_LINUX_AARCH64:    ${{ steps.sha.outputs.sha256_linux_aarch64 }}
           SHA_LINUX_X86_64:     ${{ steps.sha.outputs.sha256_linux_x86_64 }}
+          FORMULA:              Formula/${{ steps.vars.outputs.tool }}.rb
         run: |
-          FORMULA="Formula/${TOOL}.rb"
           [ -f "$FORMULA" ] || { echo "ERROR: $FORMULA not found"; exit 1; }
 
           python3 << 'PYEOF'
