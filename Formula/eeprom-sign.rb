@@ -11,11 +11,11 @@
 class EepromSign < Formula
   desc     "RSA-PSS sign, verify, and batch-flash Raspberry Pi HAT+ EEPROMs"
   homepage "https://github.com/fred-corp/eeprom-sign"
-  version  "1.0.8"
+  version  "1.1.0"
 
   on_macos do
-    url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.0.8/eeprom-sign-macos-arm64"
-    sha256 "d9948336525141ca14951080c4410c552d2f72a125a576e74c172830e274a351"
+    url    "https://github.com/fred-corp/eeprom-sign/releases/download/v1.1.0/eeprom-sign-macos-arm64"
+    sha256 "bd3177e74cd58e319ab6a9e16b47d7a1105c70d7d5fefdac86d6624c8139066d"
   end
   on_linux do
     if Hardware::CPU.arm?
